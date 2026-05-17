@@ -13,7 +13,7 @@ from pymongo import MongoClient
 import certifi
 
 # --- Your NEW Official Bot Token ---
-BOT_TOKEN = "8537514716:AAEj-BrC-7L1FLws6AhrtQ3oNlMrZ1xSKZU"
+BOT_TOKEN = "8632696115:AAF8PH4Skx6Jl_bXjhOQZ7Yzopj7RyYxfgo"
 bot = telebot.TeleBot(BOT_TOKEN, threaded=True)
 
 # ==========================================
