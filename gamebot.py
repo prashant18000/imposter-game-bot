@@ -1,0 +1,574 @@
+import telebot
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+import random
+import threading
+import time
+import requests
+import urllib.parse
+import sqlite3
+import os
+from datetime import datetime, timedelta
+
+# --- Your NEW Official Bot Token ---
+BOT_TOKEN = "8537514716:AAEj-BrC-7L1FLws6AhrtQ3oNlMrZ1xSKZU"
+bot = telebot.TeleBot(BOT_TOKEN, threaded=True)
+
+# ==========================================
+# 🛡️ ANTI-CRASH NAME FILTER
+# ==========================================
+def clean_name(name):
+    if not name: 
+        return "Player"
+    return name.replace('[', '').replace(']', '').replace('*', '').replace('_', '').replace('`', '')
+
+# ==========================================
+# 💾 SQLITE3 DATABASE SYSTEM
+# ==========================================
+DB_FILE = "school_survival_bot.db"
+
+def init_db():
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS users 
+                 (user_id TEXT PRIMARY KEY, points INTEGER DEFAULT 0, daily_claim TEXT)''')
+    try:
+        c.execute("ALTER TABLE users ADD COLUMN name TEXT")
+    except sqlite3.OperationalError:
+        pass 
+    conn.commit()
+    conn.close()
+
+init_db()
+
+def add_points(user_id, name, points):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    uid = str(user_id)
+    safe_name = clean_name(name)
+    c.execute("SELECT points FROM users WHERE user_id=?", (uid,))
+    row = c.fetchone()
+    if row:
+        c.execute("UPDATE users SET points = points + ?, name = ? WHERE user_id=?", (points, safe_name, uid))
+    else:
+        c.execute("INSERT INTO users (user_id, name, points) VALUES (?, ?, ?)", (uid, safe_name, points))
+    conn.commit()
+    conn.close()
+
+def get_points(user_id):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("SELECT points FROM users WHERE user_id=?", (str(user_id),))
+    row = c.fetchone()
+    conn.close()
+    return row[0] if row else 0
+
+def get_top_players():
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("SELECT user_id, name, points FROM users ORDER BY points DESC LIMIT 10")
+    rows = c.fetchall()
+    conn.close()
+    return rows
+
+# ==========================================
+# 🎮 GAME LOGIC & STATE MANAGEMENT
+# ==========================================
+games = {}
+
+WORD_PAIRS = [
+    ("Apple", "Mango"), ("Cat", "Dog"), ("Pen", "Pencil"),
+    ("Sun", "Moon"), ("Car", "Bike"), ("Milk", "Water"),
+    ("Book", "Notebook"), ("Chair", "Table"), ("Shoes", "Socks"),
+    # 🐾 Animals & Birds (Thodi similarity, par alag behavior)
+    ("Tiger", "Lion"), ("Dog", "Wolf"), ("Cat", "Leopard"), ("Horse", "Donkey"), ("Rabbit", "Mouse"),
+    ("Frog", "Toad"), ("Butterfly", "Moth"), ("Snake", "Earthworm"), ("Eagle", "Hawk"), ("Shark", "Dolphin"),
+    ("Whale", "Shark"), ("Penguin", "Ostrich"), ("Monkey", "Gorilla"), ("Elephant", "Hippo"), ("Bear", "Panda"),
+    ("Cow", "Buffalo"), ("Goat", "Sheep"), ("Hen", "Duck"), ("Crow", "Pigeon"), ("Parrot", "Peacock"),
+
+    # 💻 Tech & Daily Objects (Kaam ek jaisa, par dikhne mein alag)
+    ("Laptop", "Desktop"), ("Phone", "Tablet"), ("Television", "Monitor"), ("Watch", "Wall Clock"), ("Pen", "Marker"),
+    ("Pencil", "Crayon"), ("Book", "Magazine"), ("Newspaper", "Magazine"), ("Chair", "Sofa"), ("Table", "Desk"),
+    ("Fan", "Cooler"), ("Refrigerator", "Air Conditioner"), ("Glasses", "Goggles"), ("Backpack", "Suitcase"), ("Wallet", "Purse"),
+    ("Key", "Lock"), ("Scissors", "Knife"), ("Spoon", "Fork"), ("Plate", "Bowl"), ("Bottle", "Jug"),
+    ("Mirror", "Window"), ("Door", "Gate"), ("Bed", "Sofa"), ("Pillow", "Cushion"), ("Towel", "Blanket"),
+    ("Soap", "Shampoo"), ("Toothbrush", "Comb"), ("Umbrella", "Raincoat"), ("Candle", "Bulb"), ("Matchbox", "Lighter"),
+
+    # 🍔 Food & Drinks (Taste alag, par khane ka waqt same)
+    ("Apple", "Orange"), ("Banana", "Mango"), ("Pizza", "Burger"), ("Tea", "Coffee"), ("Milk", "Juice"),
+    ("Cake", "Pastry"), ("Biscuit", "Cookie"), ("Chocolate", "Candy"), ("Ice Cream", "Chocolate"), ("Rice", "Wheat"),
+    ("Soup", "Salad"), ("Potato", "Tomato"), ("Onion", "Garlic"), ("Carrot", "Radish"), ("Lemon", "Orange"),
+    ("Watermelon", "Papaya"), ("Grapes", "Berries"), ("Butter", "Cheese"), ("Bread", "Roti"), ("Noodles", "Pasta"),
+
+    # 🌍 Nature & Places (Dikhne mein similar vibe)
+    ("Sun", "Moon"), ("Star", "Planet"), ("River", "Ocean"), ("Lake", "Pond"), ("Mountain", "Hill"),
+    ("Forest", "Jungle"), ("Rain", "Snow"), ("Cloud", "Fog"), ("Village", "City"), ("Street", "Highway"),
+    ("House", "Apartment"), ("School", "College"), ("Hospital", "Clinic"), ("Shop", "Mall"), ("Park", "Garden"),
+    ("Temple", "Mosque"), ("Library", "Museum"), ("Beach", "Desert"), ("Island", "Continent"), ("Earth", "Mars"),
+
+    # 👕 Body Parts & Clothing
+    ("Eye", "Ear"), ("Hand", "Foot"), ("Hair", "Nails"), ("Shirt", "T-shirt"), ("Jacket", "Sweater"),
+    ("Shoes", "Slippers"), ("Hat", "Cap"), ("Socks", "Gloves"), ("Ring", "Necklace"), ("Pants", "Shorts"),
+
+    # 🚗 Transport (Chalni road/hawa pe hi hai)
+    ("Car", "Jeep"), ("Bus", "Train"), ("Airplane", "Helicopter"), ("Bicycle", "Motorcycle"), ("Boat", "Ship"),
+    ("Truck", "Tractor"), ("Scooter", "Bike"), ("Rocket", "Jet"), ("Submarine", "Ship"), ("Taxi", "Ambulance"),
+
+    # ⚽ Sports & Misc Instruments
+    ("Cricket", "Baseball"), ("Football", "Basketball"), ("Tennis", "Badminton"), ("Chess", "Carrom"), ("Ludo", "Monopoly"),
+    ("Guitar", "Piano"), ("Flute", "Whistle"), ("Drum", "Bell"), ("Gold", "Silver"), ("Diamond", "Ruby")
+]
+
+
+def init_game(chat_id):
+    games[chat_id] = {
+        'state': 'inactive',
+        'players': {}, 
+        'imposter_ids': [],
+        'public_word': "",
+        'imposter_word': "",
+        'explanations': {}, 
+        'votes': {},
+        'initiator_id': None # <-- NEW: Tracks who started the game
+    }
+
+def fetch_ai_word_pair():
+    prompt = "Give me two simple, easily explainable, related English nouns used in daily life, separated strictly by a single comma (e.g., Apple, Mango). Do not include any other text."
+    try:
+        url = f"https://text.pollinations.ai/{urllib.parse.quote(prompt)}"
+        res = requests.get(url, timeout=5)
+        if res.status_code == 200 and "," in res.text:
+            parts = res.text.split(",")
+            return parts[0].strip().capitalize(), parts[1].strip().capitalize()
+    except:
+        pass
+    return random.choice(WORD_PAIRS)
+
+def is_group(message):
+    return message.chat.type in ['group', 'supergroup']
+
+def is_private(message):
+    return message.chat.type == 'private'
+
+# ==========================================
+# ⏱️ TIMERS & PHASES
+# ==========================================
+def lobby_timer(chat_id):
+    intervals = [
+        (90, "⏳ **1 minute left to join the arena!**"),
+        (30, "⏳ **30 seconds left to join!**"),
+        (20, "⏳ **10 seconds remaining!**"),
+        (5,  "⏳ **5 seconds...**"),
+        (2,  "⏳ **3 seconds...**"),
+        (1,  "⏳ **2 seconds...**"),
+        (1,  "⏳ **1 second...**")
+    ]
+    
+    for wait_time, warning_msg in intervals:
+        time.sleep(wait_time)
+        if chat_id not in games or games[chat_id]['state'] != 'lobby':
+            return 
+        bot.send_message(chat_id, warning_msg, parse_mode="Markdown")
+
+    time.sleep(1) 
+    if chat_id in games and games[chat_id]['state'] == 'lobby':
+        if len(games[chat_id]['players']) >= 4:
+            start_game_logic(chat_id)
+        else:
+            bot.send_message(chat_id, f"⚠️ **LOBBY TIMEOUT:** The minimum requirement of 4 players was not met. The session has been terminated. (Current: {len(games[chat_id]['players'])})", parse_mode="Markdown")
+            games[chat_id]['state'] = 'inactive'
+
+def explanation_timer(chat_id):
+    time.sleep(90) 
+    if chat_id in games and games[chat_id]['state'] == 'explaining':
+        conclude_explanation_phase(chat_id)
+
+def conclude_explanation_phase(chat_id):
+    game = games[chat_id]
+    game['state'] = 'voting'
+    
+    imposter_failures = []
+    for imp_id in game['imposter_ids']:
+        if imp_id not in game['explanations']:
+            p_name = clean_name(game['players'][imp_id]['name'])
+            imposter_failures.append(f"⚠️ **CRITICAL: No explanation was received from the imposter** [{p_name}](tg://user?id={imp_id})")
+    
+    compiled_text = "📊 **EXPLANATION PHASE CONCLUDED!** 📊\n\n"
+    if game['explanations']:
+        compiled_text += "**Review the submitted statements carefully:**\n\n"
+        for uid, exp_text in game['explanations'].items():
+            safe_name = clean_name(game['players'][uid]['name'])
+            user_tag = f"[{safe_name}](tg://user?id={uid})"
+            compiled_text += f"• {user_tag} explained: \"_{exp_text}_\"\n"
+    else:
+        compiled_text += "**No players submitted their statements in time.**\n"
+        
+    if imposter_failures:
+        compiled_text += "\n" + "\n".join(imposter_failures) + "\n"
+        
+    compiled_text += "\n🚨 **THE VOTING PHASE IS NOW OPEN!** 🚨\n\n👉 **How to cast your vote:**\n1️⃣ Reply to the suspect's message with `/vote`\n2️⃣ Type `/vote @username`\n3️⃣ Type `/vote [UserID]`"
+    
+    bot.send_message(chat_id, compiled_text, parse_mode="Markdown")
+
+# ==========================================
+# 🚀 CORE GAME COMMANDS
+# ==========================================
+@bot.message_handler(commands=['start', 'game'])
+def handle_start(message):
+    chat_id = message.chat.id
+
+    if is_private(message):
+        safe_name = clean_name(message.from_user.first_name)
+        text = (
+            "🕵️‍♂️ **SYSTEM ACCESS GRANTED** 🕵️‍♂️\n\n"
+            f"Greetings, **{safe_name}**.\n\n"
+            "You have entered the secure mainframe of **The Secret Word Imposter**. "
+            "This bot analyzes deception, strategy, and manipulation.\n\n"
+            "🧠 **Your Objective:** When added to a group, analyze the secret words, identify the liars, and amass points to dominate the global leaderboard.\n\n"
+            "Use `/help` to view the comprehensive protocol manual. Good luck."
+        )
+        bot.send_message(chat_id, text, parse_mode="Markdown")
+        return
+
+    if chat_id not in games:
+        init_game(chat_id)
+        
+    if games[chat_id]['state'] != 'inactive':
+        bot.reply_to(message, "❌ **ACTION DENIED: A game session is already forming or running in this chat. Type `/end` to terminate it first.**", parse_mode="Markdown")
+        return
+
+    games[chat_id]['state'] = 'lobby'
+    games[chat_id]['players'] = {}
+    games[chat_id]['initiator_id'] = message.from_user.id # <-- Saves the user who started it
+    
+    text = (
+        "🕵️‍♂️ **THE ARENA IS OPEN** 🕵️‍♂️\n\n"
+        "A new session of deception has been initiated. Are you sharp enough to survive?\n\n"
+        "👉 **Type `/join` in this group to enter the game!** (Min: 4 Players)\n"
+        "⚡ **Type `/startgame` to launch immediately once 4+ players join!**\n\n"
+        "⚠️ **MANDATORY:** You must start the bot in private PM first, otherwise, you cannot receive your secret word."
+    )
+    bot.send_message(chat_id, text, parse_mode="Markdown")
+    threading.Thread(target=lobby_timer, args=(chat_id,)).start()
+
+@bot.message_handler(commands=['help'])
+def show_help(message):
+    text = (
+        "📖 **THE OFFICIAL PROTOCOL MANUAL** 📖\n\n"
+        "**🎮 GAMEPLAY COMMANDS:**\n"
+        "• `/start` - Initiate a new game lobby in a group.\n"
+        "• `/join` - Enter the active lobby.\n"
+        "• `/startgame` - Manually start the game without waiting for the timer.\n"
+        "• `/vote` - Cast your vote (reply to a message, use `@username`, or User ID).\n"
+        "• `/end` - Instantly terminate an ongoing session.\n\n"
+        "**💰 ECONOMY & RANKING:**\n"
+        "• `/score` - Check your current verified points.\n"
+        "• `/toprich` - View the Global Top 10 Leaderboard.\n"
+        "• `/daily` - Claim 50 free points daily (Executes **ONLY** in bot PM after 6:00 AM).\n\n"
+        "**⚙️ UTILITIES:**\n"
+        "• `/userid` - Reply to someone with this to extract their unique identifier.\n\n"
+        "**🧠 REWARDS SYSTEM:**\n"
+        "• Public Victory: **+10 points** to innocents.\n"
+        "• Imposter Victory: **+25 points** to imposters."
+    )
+    bot.reply_to(message, text, parse_mode="Markdown")
+
+@bot.message_handler(commands=['join'])
+def join_game(message):
+    if not is_group(message):
+        bot.reply_to(message, "❌ **COMMAND DENIED: You can only join a game inside a Group Chat arena.**", parse_mode="Markdown")
+        return
+
+    chat_id = message.chat.id
+    if chat_id not in games or games[chat_id]['state'] != 'lobby':
+        bot.reply_to(message, "❌ **ACTION DENIED: There is no active lobby. An administrator must type `/start` to initiate a new session.**", parse_mode="Markdown")
+        return
+
+    user_id = message.from_user.id
+    user_name = message.from_user.first_name
+    username = message.from_user.username or ""
+
+    if user_id in games[chat_id]['players']:
+        bot.reply_to(message, f"⚠️ **WARNING:** {clean_name(user_name)}, you are already registered in the current lobby.", parse_mode="Markdown")
+        return
+
+    try:
+        bot.send_message(user_id, "✅ **Lobby entry secured. Await further instructions in the group chat.**", parse_mode="Markdown")
+        games[chat_id]['players'][user_id] = {'name': user_name, 'username': username}
+        p_list = "\n".join([f"👤 [{clean_name(p['name'])}](tg://user?id={uid})" for uid, p in games[chat_id]['players'].items()])
+        bot.send_message(chat_id, f"✅ **[{clean_name(user_name)}](tg://user?id={user_id}) has successfully joined! ({len(games[chat_id]['players'])}/4+)**\n\n**Registered Players:**\n{p_list}", parse_mode="Markdown")
+    except telebot.apihelper.ApiTelegramException:
+        bot.reply_to(message, f"❌ **ACCESS DENIED for {clean_name(user_name)}!**\n\nI am unable to send you a Private Message. You must click my profile, tap **START**, and then try `/join` again.", parse_mode="Markdown")
+
+@bot.message_handler(commands=['startgame'])
+def manual_start(message):
+    if not is_group(message):
+        bot.reply_to(message, "❌ **COMMAND DENIED: This command is restricted to Group Chats.**", parse_mode="Markdown")
+        return
+        
+    chat_id = message.chat.id
+    if chat_id in games and games[chat_id]['state'] == 'lobby':
+        if len(games[chat_id]['players']) >= 4:
+            start_game_logic(chat_id)
+        else:
+            bot.reply_to(message, f"⚠️ **ACTION DENIED: A minimum of 4 players is required to force start the game. (Current: {len(games[chat_id]['players'])})**", parse_mode="Markdown")
+    else:
+        bot.reply_to(message, "❌ **ACTION DENIED: There is no active lobby waiting to be started.**", parse_mode="Markdown")
+
+def start_game_logic(chat_id):
+    game = games[chat_id]
+    game['state'] = 'explaining'
+    
+    num_players = len(game['players'])
+    if num_players < 8: num_imposters = 1
+    elif num_players < 12: num_imposters = 3
+    elif num_players < 16: num_imposters = 5
+    else: num_imposters = 5 + ((num_players - 12) // 4) * 2
+
+    public_word, imposter_word = fetch_ai_word_pair()
+    game['public_word'], game['imposter_word'] = public_word, imposter_word
+    
+    player_ids = list(game['players'].keys())
+    game['imposter_ids'] = random.sample(player_ids, num_imposters)
+    game['explanations'], game['votes'] = {}, {}
+
+    tags = [f"[{clean_name(p['name'])}](tg://user?id={uid})" for uid, p in game['players'].items()]
+    
+    bot.send_message(chat_id, f"🎮 **THE GAME HAS OFFICIALLY COMMENCED!** 🎮\n\n{', '.join(tags)}\n\n➡️ **Proceed to the bot's Private Messages (PM) and explain your secret word.**\n\n⏳ **You have exactly 1 minute and 30 seconds to submit your statement!**", parse_mode="Markdown")
+
+    for uid in player_ids:
+        try:
+            if uid in game['imposter_ids']:
+                bot.send_message(uid, f"🐺 **CRITICAL ALERT: YOU ARE THE IMPOSTER!** 🐺\n\nYour secret word is: **{imposter_word}**\n\n➡️ **Provide your explanation here in the PM to blend in! Do not expose yourself!**", parse_mode="Markdown")
+            else:
+                bot.send_message(uid, f"🧑‍🤝‍🧑 **YOUR ROLE: NORMAL PLAYER** 🧑‍🤝‍🧑\n\nYour secret word is: **{public_word}**\n\n➡️ **Provide your explanation here in the PM.**", parse_mode="Markdown")
+        except:
+            pass
+
+    threading.Thread(target=explanation_timer, args=(chat_id,)).start()
+
+@bot.message_handler(func=lambda m: is_private(m) and not m.text.startswith('/'))
+def collect_pm_explanations(message):
+    user_id = message.from_user.id
+    for chat_id, game in games.items():
+        if game['state'] == 'explaining' and user_id in game['players']:
+            if user_id not in game['explanations']:
+                game['explanations'][user_id] = message.text
+                bot.reply_to(message, "✅ **Your explanation has been securely encrypted and recorded. Return to the group.**", parse_mode="Markdown")
+            else:
+                bot.reply_to(message, "⚠️ **ACTION FAILED: You have already submitted a statement for this round.**", parse_mode="Markdown")
+            return
+    bot.reply_to(message, "❌ **ERROR: I only accept text statements when an active game is in the 'Explanation Phase'.**", parse_mode="Markdown")
+
+@bot.message_handler(commands=['vote'])
+def process_vote_command(message):
+    if not is_group(message):
+        bot.reply_to(message, "❌ **COMMAND DENIED: Voting protocols can only be executed within the Group Chat arena.**", parse_mode="Markdown")
+        return
+
+    chat_id = message.chat.id
+    if chat_id not in games or games[chat_id]['state'] != 'voting':
+        bot.reply_to(message, "❌ **ACTION DENIED: The voting phase is currently closed or no active game exists.**", parse_mode="Markdown")
+        return
+        
+    game, voter_id = games[chat_id], message.from_user.id
+    
+    if voter_id not in game['players']:
+        bot.reply_to(message, "🚫 **AUTHORIZATION FAILED: You are not a registered participant in this session.**", parse_mode="Markdown")
+        return
+    if voter_id in game['votes']:
+        bot.reply_to(message, "⚠️ **ACTION FAILED: You have already cast your binding vote.**", parse_mode="Markdown")
+        return
+
+    target_id = None
+    if message.reply_to_message:
+        target_id = message.reply_to_message.from_user.id
+    else:
+        args = message.text.split()
+        if len(args) > 1:
+            arg = args[1]
+            if arg.isdigit(): target_id = int(arg)
+            elif arg.startswith('@'):
+                target_username = arg.replace('@', '').strip().lower()
+                for uid, p in game['players'].items():
+                    if p['username'].lower() == target_username:
+                        target_id = uid
+                        break
+
+    if not target_id or target_id not in game['players']:
+        bot.reply_to(message, "❌ **INVALID TARGET:** Please cast your vote by replying to a user, tagging them, or entering their User ID.", parse_mode="Markdown")
+        return
+
+    game['votes'][voter_id] = target_id
+    safe_target_name = clean_name(game['players'][target_id]['name'])
+    target_tag = f"[{safe_target_name}](tg://user?id={target_id})"
+    bot.reply_to(message, f"🗳️ **Vote Confirmed:** Your execution vote for {target_tag} has been registered.", parse_mode="Markdown")
+
+    if len(game['votes']) == len(game['players']):
+        conclude_game_results(chat_id)
+
+def conclude_game_results(chat_id):
+    game = games[chat_id]
+    tally = {}
+    for vid in game['votes'].values():
+        tally[vid] = tally.get(vid, 0) + 1
+        
+    max_votes = max(tally.values())
+    highest_voted_players = [uid for uid, count in tally.items() if count == max_votes]
+    
+    results = "📊 **FINAL ELIMINATION RESULTS!** 📊\n\n"
+    for uid, count in tally.items():
+        safe_name = clean_name(game['players'][uid]['name'])
+        user_tag = f"[{safe_name}](tg://user?id={uid})"
+        results += f"• {user_tag}: {count} votes\n"
+        
+    results += f"\n🍏 **Public Word:** **{game['public_word']}**\n🥭 **Imposter Word:** **{game['imposter_word']}**\n\n"
+
+    if len(highest_voted_players) > 1:
+        results += "👔 **STALEMATE! The group failed to reach a consensus.**\n🏆 **THE IMPOSTERS ESCAPE AND SECURE THE VICTORY!**\n\n🏅 **Points Rewarded:**\n"
+        for imp_id in game['imposter_ids']:
+            safe_imp_name = clean_name(game['players'][imp_id]['name'])
+            add_points(imp_id, safe_imp_name, 25)
+            imp_tag = f"[{safe_imp_name}](tg://user?id={imp_id})"
+            results += f"• {imp_tag} (Imposter): **+25 points**\n"
+    elif highest_voted_players[0] in game['imposter_ids']:
+        caught_id = highest_voted_players[0]
+        safe_caught_name = clean_name(game['players'][caught_id]['name'])
+        caught_tag = f"[{safe_caught_name}](tg://user?id={caught_id})"
+        results += f"🎯 **EXECUTION SUCCESSFUL! {caught_tag} was indeed a liar!**\n🏆 **THE PUBLIC WINS!**\n\n🏅 **Points Rewarded:**\n"
+        for uid in game['players'].keys():
+            if uid not in game['imposter_ids']:
+                safe_norm_name = clean_name(game['players'][uid]['name'])
+                add_points(uid, safe_norm_name, 10)
+                norm_tag = f"[{safe_norm_name}](tg://user?id={uid})"
+                results += f"• {norm_tag}: **+10 points**\n"
+    else:
+        wrong_id = highest_voted_players[0]
+        safe_wrong_name = clean_name(game['players'][wrong_id]['name'])
+        wrong_tag = f"[{safe_wrong_name}](tg://user?id={wrong_id})"
+        results += f"❌ **CATASTROPHIC FAILURE! You executed {wrong_tag}, an innocent player!**\n🏆 **THE IMPOSTERS WIN THE GAME!**\n\n🏅 **Points Rewarded:**\n"
+        for imp_id in game['imposter_ids']:
+            safe_imp_name = clean_name(game['players'][imp_id]['name'])
+            add_points(imp_id, safe_imp_name, 25)
+            imp_tag = f"[{safe_imp_name}](tg://user?id={imp_id})"
+            results += f"• {imp_tag} (Imposter): **+25 points**\n"
+
+    bot.send_message(chat_id, results, parse_mode="Markdown")
+    game['state'] = 'inactive'
+
+# --- NEW: SECURE END COMMAND ---
+@bot.message_handler(commands=['end'])
+def end_game(message):
+    if not is_group(message):
+        bot.reply_to(message, "❌ **COMMAND DENIED: The `/end` command is restricted to Group Chats.**", parse_mode="Markdown")
+        return
+        
+    chat_id = message.chat.id
+    user_id = message.from_user.id
+    
+    if chat_id not in games or games[chat_id]['state'] == 'inactive':
+        bot.reply_to(message, "⚠️ **ACTION FAILED: No active game session is currently running in this group.**", parse_mode="Markdown")
+        return
+        
+    # Security Check: Is the user the initiator?
+    is_initiator = (user_id == games[chat_id].get('initiator_id'))
+    
+    # Security Check: Is the user a group Admin or Creator?
+    is_admin = False
+    try:
+        member = bot.get_chat_member(chat_id, user_id)
+        if member.status in ['administrator', 'creator']:
+            is_admin = True
+    except:
+        pass # Ignore API error if bot lacks certain rights, fallback to initiator check
+        
+    if not (is_initiator or is_admin):
+        # Strict Negative Message
+        bot.reply_to(message, "❌ **ACCESS DENIED: Unauthorized execution.**\n\nOnly **Group Administrators** or the **user who initiated the game** are permitted to use the `/end` command.", parse_mode="Markdown")
+        return
+
+    # If authorized, terminate the game
+    games[chat_id]['state'] = 'inactive'
+    bot.reply_to(message, "🛑 **ADMINISTRATIVE OVERRIDE: The active game session has been forcefully terminated.**", parse_mode="Markdown")
+
+# ==========================================
+# 💰 ECONOMY & UTILITY COMMANDS
+# ==========================================
+@bot.message_handler(commands=['score'])
+def check_score(message):
+    pts = get_points(message.from_user.id)
+    safe_name = clean_name(message.from_user.first_name)
+    bot.reply_to(message, f"🥇 **[{safe_name}](tg://user?id={message.from_user.id}), your current verifiable balance is:** `{pts} points`", parse_mode="Markdown")
+
+def build_leaderboard():
+    rows = get_top_players()
+    text = "🏆 **GLOBAL TOP 10 LEADERBOARD** 🏆\n\n"
+    if not rows: text += "_The database is currently empty. Start playing to rank up!_"
+    for idx, (uid, name, pts) in enumerate(rows):
+        display_name = clean_name(name) if name else "Player"
+        text += f"**{idx + 1}.** [{display_name}](tg://user?id={uid}) ➡️ **{pts} points**\n"
+    markup = InlineKeyboardMarkup()
+    markup.add(InlineKeyboardButton("🔄 Refresh Standings", callback_data="refresh_leaderboard"))
+    return text, markup
+
+@bot.message_handler(commands=['toprich'])
+def show_leaderboard(message):
+    text, markup = build_leaderboard()
+    bot.send_message(message.chat.id, text, reply_markup=markup, parse_mode="Markdown")
+
+@bot.callback_query_handler(func=lambda call: call.data == "refresh_leaderboard")
+def refresh_leaderboard_click(call):
+    text, markup = build_leaderboard()
+    try:
+        bot.edit_message_text(text, chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup, parse_mode="Markdown")
+        bot.answer_callback_query(call.id, "The leaderboard has been successfully synchronized!")
+    except:
+        bot.answer_callback_query(call.id, "The leaderboard is already up to date!")
+
+@bot.message_handler(commands=['daily'])
+def claim_daily(message):
+    if not is_private(message):
+        bot.reply_to(message, "❌ **COMMAND DENIED: Security protocol requires `/daily` to be executed exclusively in Private Messages (PM).**", parse_mode="Markdown")
+        return
+        
+    user_id = str(message.from_user.id)
+    user_name = clean_name(message.from_user.first_name)
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("SELECT daily_claim FROM users WHERE user_id=?", (user_id,))
+    row = c.fetchone()
+    
+    now = datetime.now()
+    current_cycle = now.replace(hour=6, minute=0, second=0, microsecond=0) if now.hour >= 6 else (now - timedelta(days=1)).replace(hour=6, minute=0, second=0, microsecond=0)
+    
+    can_claim = False
+    if not row or not row[0]:
+        can_claim = True
+    else:
+        last_claim = datetime.fromisoformat(row[0])
+        if last_claim < current_cycle: can_claim = True
+            
+    if can_claim:
+        add_points(user_id, user_name, 50)
+        c.execute("UPDATE users SET daily_claim=? WHERE user_id=?", (now.isoformat(), user_id))
+        bot.reply_to(message, "🎁 **DAILY BONUS AUTHORIZED!** 🎁\n\n💰 **+50 points** have been securely deposited into your account.\n⏳ _Return tomorrow after 6:00 AM IST for your next claim._", parse_mode="Markdown")
+    else:
+        next_claim = current_cycle + timedelta(days=1)
+        time_left = next_claim - now
+        h, rem = divmod(time_left.seconds, 3600)
+        m, _ = divmod(rem, 60)
+        bot.reply_to(message, f"❌ **ACCESS DENIED: You have already exhausted your daily claim quota for this cycle.**\n\n⏰ _Refresh available in:_ **{h}h {m}m** (Strictly after 6:00 AM)", parse_mode="Markdown")
+    
+    conn.commit()
+    conn.close()
+
+@bot.message_handler(commands=['userid'])
+def get_user_id(message):
+    if message.reply_to_message:
+        target_id = message.reply_to_message.from_user.id
+        target_name = clean_name(message.reply_to_message.from_user.first_name)
+        bot.reply_to(message, f"👤 **Target:** [{target_name}](tg://user?id={target_id})\n🆔 **Unique ID:** `{target_id}`", parse_mode="Markdown")
+    else:
+        bot.reply_to(message, "ℹ️ **INSTRUCTION:** Please reply to a specific user's message with `/userid` to extract their unique identifier.", parse_mode="Markdown")
+
+print("🚀 Anti-Crash Elite Imposter Bot is running smoothly with Admin controls...")
+bot.infinity_polling()
