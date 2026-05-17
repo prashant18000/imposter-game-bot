@@ -26,7 +26,7 @@ db = client['school_survival_db']
 users_collection = db['users']
 
 # ==========================================
-# 🛡️ ANTI-CRASH NAME FILTER
+# 🛡️ ANTI-CRASH NAME FILTER & POINTS LOGIC
 # ==========================================
 def clean_name(name):
     if not name: 
@@ -41,6 +41,17 @@ def add_points(user_id, name, points):
         {"$inc": {"points": points}, "$set": {"name": safe_name}},
         upsert=True
     )
+    # Check if this user has a referrer for lifetime commission (10%)
+    if points > 0:
+        user = users_collection.find_one({"_id": uid})
+        if user and "referred_by" in user:
+            referrer_id = user["referred_by"]
+            commission = int(points * 0.10)
+            if commission > 0:
+                users_collection.update_one(
+                    {"_id": str(referrer_id)},
+                    {"$inc": {"points": commission}}
+                )
 
 def get_points(user_id):
     user = users_collection.find_one({"_id": str(user_id)})
@@ -54,22 +65,20 @@ def get_top_players():
 # 🎮 150+ MASSIVE WORD PAIRS LIBRARY
 # ==========================================
 WORD_PAIRS = [
-    # 🍔 Food & Drinks (20)
+    # 🍔 Food & Drinks
     ("Apple", "Orange"), ("Pizza", "Burger"), ("Tea", "Coffee"), ("Milk", "Juice"), 
     ("Rice", "Wheat"), ("Butter", "Cheese"), ("Cake", "Pastry"), ("Biscuit", "Cookie"), 
     ("Soup", "Salad"), ("Potato", "Tomato"), ("Onion", "Garlic"), ("Carrot", "Radish"), 
     ("Lemon", "Lime"), ("Bread", "Roti"), ("Noodles", "Pasta"), ("Ice Cream", "Chocolate"), 
     ("Peanut", "Almond"), ("Sugar", "Salt"), ("Jam", "Honey"), ("Watermelon", "Papaya"),
-    
-    # 🐾 Animals & Birds (22)
+    # 🐾 Animals & Birds
     ("Tiger", "Lion"), ("Dog", "Wolf"), ("Cat", "Leopard"), ("Horse", "Donkey"), 
     ("Rabbit", "Mouse"), ("Frog", "Toad"), ("Butterfly", "Moth"), ("Snake", "Earthworm"), 
     ("Eagle", "Hawk"), ("Shark", "Dolphin"), ("Whale", "Shark"), ("Penguin", "Ostrich"), 
     ("Monkey", "Gorilla"), ("Elephant", "Hippo"), ("Bear", "Panda"), ("Cow", "Buffalo"), 
     ("Goat", "Sheep"), ("Hen", "Duck"), ("Crow", "Pigeon"), ("Parrot", "Peacock"), 
     ("Ant", "Spider"), ("Bee", "Wasp"),
-    
-    # 💻 Tech & Daily Objects (31)
+    # 💻 Tech & Daily Objects
     ("Laptop", "Desktop"), ("Phone", "Tablet"), ("Television", "Monitor"), ("Watch", "Clock"), 
     ("Pen", "Marker"), ("Pencil", "Crayon"), ("Book", "Magazine"), ("Newspaper", "Magazine"), 
     ("Chair", "Sofa"), ("Table", "Desk"), ("Fan", "Cooler"), ("Fridge", "Air Conditioner"), 
@@ -78,33 +87,28 @@ WORD_PAIRS = [
     ("Mirror", "Window"), ("Door", "Gate"), ("Bed", "Sofa"), ("Pillow", "Cushion"), 
     ("Towel", "Blanket"), ("Soap", "Shampoo"), ("Toothbrush", "Comb"), ("Umbrella", "Raincoat"), 
     ("Candle", "Bulb"), ("Matchbox", "Lighter"), ("Camera", "Binoculars"),
-    
-    # 🌍 Nature, Places & Materials (24)
+    # 🌍 Nature, Places & Materials
     ("Sun", "Moon"), ("Star", "Planet"), ("River", "Ocean"), ("Lake", "Pond"), 
     ("Mountain", "Hill"), ("Forest", "Jungle"), ("Rain", "Snow"), ("Cloud", "Fog"), 
     ("Village", "City"), ("Street", "Highway"), ("House", "Apartment"), ("School", "College"), 
     ("Hospital", "Clinic"), ("Shop", "Mall"), ("Park", "Garden"), ("Temple", "Mosque"), 
     ("Library", "Museum"), ("Beach", "Desert"), ("Island", "Continent"), ("Earth", "Mars"), 
     ("Gold", "Silver"), ("Diamond", "Ruby"), ("Iron", "Steel"), ("Coal", "Wood"),
-    
-    # 👕 Body Parts & Clothing (13)
+    # 👕 Body Parts & Clothing
     ("Eye", "Ear"), ("Hand", "Foot"), ("Hair", "Nails"), ("Shirt", "T-shirt"), 
     ("Jacket", "Sweater"), ("Shoes", "Slippers"), ("Hat", "Cap"), ("Socks", "Gloves"), 
     ("Ring", "Necklace"), ("Pants", "Shorts"), ("Tie", "Belt"), ("Scarf", "Muffler"), 
     ("Perfume", "Deodorant"),
-    
-    # 🚗 Transport (12)
+    # 🚗 Transport
     ("Car", "Jeep"), ("Bus", "Train"), ("Airplane", "Helicopter"), ("Bicycle", "Motorcycle"), 
     ("Boat", "Ship"), ("Truck", "Tractor"), ("Scooter", "Bike"), ("Rocket", "Jet"), 
     ("Submarine", "Ship"), ("Taxi", "Ambulance"), ("Metro", "Train"), ("Skateboard", "Roller Skates"),
-    
-    # ⚽ Sports & Professions (15)
+    # ⚽ Sports & Professions
     ("Cricket", "Baseball"), ("Football", "Basketball"), ("Tennis", "Badminton"), ("Chess", "Carrom"), 
     ("Ludo", "Monopoly"), ("Guitar", "Piano"), ("Flute", "Whistle"), ("Drum", "Bell"), 
     ("Doctor", "Nurse"), ("Teacher", "Principal"), ("Police", "Army"), ("Pilot", "Driver"), 
     ("Actor", "Singer"), ("Painter", "Writer"), ("Chef", "Waiter"),
-    
-    # 🌀 Extra Tricky Mixed Pairs (19)
+    # 🌀 Extra Tricky Mixed Pairs
     ("Pen", "Pencil"), ("Milk", "Water"), ("Apple", "Mango"), ("Chair", "Table"), 
     ("Shoes", "Socks"), ("Book", "Notebook"), ("Sun", "Star"), ("Rain", "Wind"), 
     ("Fire", "Water"), ("Ice", "Snow"), ("Paper", "Plastic"), ("Glass", "Plastic"), 
@@ -196,18 +200,59 @@ def conclude_explanation_phase(chat_id):
     bot.send_message(chat_id, compiled_text, parse_mode="Markdown")
 
 # ==========================================
-# 🚀 CORE GAME COMMANDS
+# 🚀 CORE GAME COMMANDS (WITH REFERRAL LOGIC)
 # ==========================================
 @bot.message_handler(commands=['start', 'game'])
 def handle_start(message):
     chat_id = message.chat.id
+    user_id = str(message.from_user.id)
+    safe_name = clean_name(message.from_user.first_name)
 
     if is_private(message):
-        safe_name = clean_name(message.from_user.first_name)
+        # Check if user joined via an affiliate/referral link
+        text_args = message.text.split()
+        referral_bonus_text = ""
+        
+        # If user is completely new to the DB
+        existing_user = users_collection.find_one({"_id": user_id})
+        
+        if len(text_args) > 1 and text_args[1].startswith("ref_"):
+            referrer_id = text_args[1].replace("ref_", "").strip()
+            
+            if not existing_user: # Process only if the user is new
+                if referrer_id != user_id: # Prevent self-referral
+                    # Save user with referrer info and award points
+                    users_collection.update_one(
+                        {"_id": user_id},
+                        {"$set": {"name": safe_name, "points": 50, "referred_by": referrer_id}},
+                        upsert=True
+                    )
+                    # Reward the Referrer (+100 points)
+                    users_collection.update_one(
+                        {"_id": str(referrer_id)},
+                        {"$inc": {"points": 100}}
+                    )
+                    referral_bonus_text = "🎁 **REFERRAL BONUS ACTIVATED!** You received **+50 Points** and your friend received **+100 Points**!\n\n"
+                    try:
+                        bot.send_message(int(referrer_id), f"🎉 *New Ally Joined!* Someone used your referral link. You earned **+100 Points**!", parse_mode="Markdown")
+                    except:
+                        pass
+                else:
+                    referral_bonus_text = "⚠️ *Self-referral detected. Nice try, but no bonus points for self-sabotage!* 😂\n\n"
+
+        # If user is already in DB or no referral code used, just initialize basic profile
+        if not users_collection.find_one({"_id": user_id}):
+            users_collection.update_one(
+                {"_id": user_id},
+                {"$set": {"name": safe_name, "points": 0}},
+                upsert=True
+            )
+
         text = (
             "🕵️‍♂️ **SYSTEM ACCESS GRANTED** 🕵️‍♂️\n\n"
             f"Greetings, **{safe_name}**.\n\n"
-            "You have entered the secure mainframe of **Gupt Shabd (The Blind Undercover)**. "
+            f"{referral_bonus_text}"
+            "You have entered the secure mainframe of **Blind Imposter**. "
             "This bot analyzes deception, strategy, and manipulation.\n\n"
             "🧠 **Your Objective:** When added to a group, analyze the secret words, identify the liars, and amass points to dominate the global leaderboard.\n\n"
             "Use `/help` to view the comprehensive protocol manual. Good luck."
@@ -215,6 +260,7 @@ def handle_start(message):
         bot.send_message(chat_id, text, parse_mode="Markdown")
         return
 
+    # Group game initialization logic
     if chat_id not in games:
         init_game(chat_id)
         
@@ -249,7 +295,8 @@ def show_help(message):
         "**💰 ECONOMY & RANKING:**\n"
         "• `/score` - Check your current verified points.\n"
         "• `/toprich` - View the Global Top 10 Leaderboard.\n"
-        "• `/daily` - Claim 50 free points daily (Executes **ONLY** in bot PM after 6:00 AM).\n\n"
+        "• `/daily` - Claim 50 free points daily (Executes **ONLY** in bot PM after 6:00 AM).\n"
+        "• `/refer` - Generate your lifetime affiliate link to earn passive coins!\n\n"
         "**⚙️ UTILITIES:**\n"
         "• `/userid` - Reply to someone with this to extract their unique identifier.\n\n"
         "**🧠 REWARDS SYSTEM:**\n"
@@ -310,7 +357,6 @@ def start_game_logic(chat_id):
     elif num_players < 16: num_imposters = 5
     else: num_imposters = 5 + ((num_players - 12) // 4) * 2
 
-    # 100% Random & Cache-Free Logic
     public_word, imposter_word = random.choice(WORD_PAIRS)
     game['public_word'], game['imposter_word'] = public_word, imposter_word
     
@@ -449,7 +495,6 @@ def conclude_game_results(chat_id):
     bot.send_message(chat_id, results, parse_mode="Markdown")
     game['state'] = 'inactive'
 
-# --- SECURE END COMMAND ---
 @bot.message_handler(commands=['end'])
 def end_game(message):
     if not is_group(message):
@@ -464,7 +509,6 @@ def end_game(message):
         return
         
     is_initiator = (user_id == games[chat_id].get('initiator_id'))
-    
     is_admin = False
     try:
         member = bot.get_chat_member(chat_id, user_id)
@@ -478,11 +522,33 @@ def end_game(message):
         return
 
     games[chat_id]['state'] = 'inactive'
-    bot.reply_to(message, "🛑 **ADMINISTRATIVE OVERRIDE: The active game session has been forcefully terminated.**", parse_mode="Markdown")
+    bot.reply_to(message, "🛑 **ADMINISTRATIVE OVERRIDE: The active game session has been forcefully terminated.**", modify_id=None, parse_mode="Markdown")
 
 # ==========================================
-# 💰 ECONOMY & UTILITY COMMANDS
+# 💰 ECONOMY, UTILITY & AFFILIATE COMMANDS
 # ==========================================
+@bot.message_handler(commands=['refer', 'affiliate'])
+def generate_referral_link(message):
+    bot_info = bot.get_me()
+    bot_username = bot_info.username
+    user_id = message.from_user.id
+    
+    ref_link = f"https://t.me/{bot_username}?start=ref_{user_id}"
+    
+    text = (
+        "👥 **BLIND IMPOSTER AFFILIATE PROGRAM** 👥\n\n"
+        "Share your unique referral link to build your spy empire and earn permanent bonuses!\n\n"
+        "🎁 **Instant Join Reward:**\n"
+        "• You get: **+100 Points** instantly when they join!\n"
+        "• Your friend gets: **+50 Points** to start their journey!\n\n"
+        "💸 **Lifetime Passive Income:**\n"
+        "• Earn **10% Bonus Points** every single time your referred friend wins a game!\n\n"
+        "⏳ **Duration:** `Infinite / Lifetime` ♾️\n\n"
+        f"🔗 **Your Personal Link:**\n`{ref_link}`\n\n"
+        "_*Copy this link and drop it in groups or send it to friends!_"
+    )
+    bot.reply_to(message, text, parse_mode="Markdown")
+
 @bot.message_handler(commands=['score'])
 def check_score(message):
     pts = get_points(message.from_user.id)
@@ -570,5 +636,5 @@ def run_dummy_server():
 
 threading.Thread(target=run_dummy_server, daemon=True).start()
 
-print("🚀 Ultimate Gupt Shabd Bot is running...")
+print("🚀 Ultimate Blind Imposter Bot with Affiliate System is running...")
 bot.infinity_polling()
