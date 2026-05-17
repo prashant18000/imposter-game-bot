@@ -5,13 +5,27 @@ import threading
 import time
 import requests
 import urllib.parse
-import sqlite3
 import os
+import http.server
+import socketserver
 from datetime import datetime, timedelta
+
+# MongoDB ke liye naye packages
+from pymongo import MongoClient
+import certifi
 
 # --- Your NEW Official Bot Token ---
 BOT_TOKEN = "8537514716:AAEj-BrC-7L1FLws6AhrtQ3oNlMrZ1xSKZU"
 bot = telebot.TeleBot(BOT_TOKEN, threaded=True)
+
+# ==========================================
+# ☁️ MONGODB CLOUD DATABASE SETUP
+# ==========================================
+MONGO_URI = "mongodb+srv://dhangarprashant98_db_user:18ERAEHHQN0b6wNu@cluster0.uivjajj.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
+
+client = MongoClient(MONGO_URI, tlsCAFile=certifi.where())
+db = client['school_survival_db']
+users_collection = db['users']
 
 # ==========================================
 # 🛡️ ANTI-CRASH NAME FILTER
@@ -21,54 +35,22 @@ def clean_name(name):
         return "Player"
     return name.replace('[', '').replace(']', '').replace('*', '').replace('_', '').replace('`', '')
 
-# ==========================================
-# 💾 SQLITE3 DATABASE SYSTEM
-# ==========================================
-DB_FILE = "school_survival_bot.db"
-
-def init_db():
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS users 
-                 (user_id TEXT PRIMARY KEY, points INTEGER DEFAULT 0, daily_claim TEXT)''')
-    try:
-        c.execute("ALTER TABLE users ADD COLUMN name TEXT")
-    except sqlite3.OperationalError:
-        pass 
-    conn.commit()
-    conn.close()
-
-init_db()
-
 def add_points(user_id, name, points):
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
     uid = str(user_id)
     safe_name = clean_name(name)
-    c.execute("SELECT points FROM users WHERE user_id=?", (uid,))
-    row = c.fetchone()
-    if row:
-        c.execute("UPDATE users SET points = points + ?, name = ? WHERE user_id=?", (points, safe_name, uid))
-    else:
-        c.execute("INSERT INTO users (user_id, name, points) VALUES (?, ?, ?)", (uid, safe_name, points))
-    conn.commit()
-    conn.close()
+    users_collection.update_one(
+        {"_id": uid},
+        {"$inc": {"points": points}, "$set": {"name": safe_name}},
+        upsert=True
+    )
 
 def get_points(user_id):
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute("SELECT points FROM users WHERE user_id=?", (str(user_id),))
-    row = c.fetchone()
-    conn.close()
-    return row[0] if row else 0
+    user = users_collection.find_one({"_id": str(user_id)})
+    return user.get("points", 0) if user else 0
 
 def get_top_players():
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute("SELECT user_id, name, points FROM users ORDER BY points DESC LIMIT 10")
-    rows = c.fetchall()
-    conn.close()
-    return rows
+    users = users_collection.find().sort("points", -1).limit(10)
+    return [(u["_id"], u.get("name", "Player"), u.get("points", 0)) for u in users]
 
 # ==========================================
 # 🎮 GAME LOGIC & STATE MANAGEMENT
@@ -79,45 +61,31 @@ WORD_PAIRS = [
     ("Apple", "Mango"), ("Cat", "Dog"), ("Pen", "Pencil"),
     ("Sun", "Moon"), ("Car", "Bike"), ("Milk", "Water"),
     ("Book", "Notebook"), ("Chair", "Table"), ("Shoes", "Socks"),
-    # 🐾 Animals & Birds (Thodi similarity, par alag behavior)
     ("Tiger", "Lion"), ("Dog", "Wolf"), ("Cat", "Leopard"), ("Horse", "Donkey"), ("Rabbit", "Mouse"),
     ("Frog", "Toad"), ("Butterfly", "Moth"), ("Snake", "Earthworm"), ("Eagle", "Hawk"), ("Shark", "Dolphin"),
     ("Whale", "Shark"), ("Penguin", "Ostrich"), ("Monkey", "Gorilla"), ("Elephant", "Hippo"), ("Bear", "Panda"),
     ("Cow", "Buffalo"), ("Goat", "Sheep"), ("Hen", "Duck"), ("Crow", "Pigeon"), ("Parrot", "Peacock"),
-
-    # 💻 Tech & Daily Objects (Kaam ek jaisa, par dikhne mein alag)
     ("Laptop", "Desktop"), ("Phone", "Tablet"), ("Television", "Monitor"), ("Watch", "Wall Clock"), ("Pen", "Marker"),
     ("Pencil", "Crayon"), ("Book", "Magazine"), ("Newspaper", "Magazine"), ("Chair", "Sofa"), ("Table", "Desk"),
     ("Fan", "Cooler"), ("Refrigerator", "Air Conditioner"), ("Glasses", "Goggles"), ("Backpack", "Suitcase"), ("Wallet", "Purse"),
     ("Key", "Lock"), ("Scissors", "Knife"), ("Spoon", "Fork"), ("Plate", "Bowl"), ("Bottle", "Jug"),
     ("Mirror", "Window"), ("Door", "Gate"), ("Bed", "Sofa"), ("Pillow", "Cushion"), ("Towel", "Blanket"),
     ("Soap", "Shampoo"), ("Toothbrush", "Comb"), ("Umbrella", "Raincoat"), ("Candle", "Bulb"), ("Matchbox", "Lighter"),
-
-    # 🍔 Food & Drinks (Taste alag, par khane ka waqt same)
     ("Apple", "Orange"), ("Banana", "Mango"), ("Pizza", "Burger"), ("Tea", "Coffee"), ("Milk", "Juice"),
     ("Cake", "Pastry"), ("Biscuit", "Cookie"), ("Chocolate", "Candy"), ("Ice Cream", "Chocolate"), ("Rice", "Wheat"),
     ("Soup", "Salad"), ("Potato", "Tomato"), ("Onion", "Garlic"), ("Carrot", "Radish"), ("Lemon", "Orange"),
     ("Watermelon", "Papaya"), ("Grapes", "Berries"), ("Butter", "Cheese"), ("Bread", "Roti"), ("Noodles", "Pasta"),
-
-    # 🌍 Nature & Places (Dikhne mein similar vibe)
     ("Sun", "Moon"), ("Star", "Planet"), ("River", "Ocean"), ("Lake", "Pond"), ("Mountain", "Hill"),
     ("Forest", "Jungle"), ("Rain", "Snow"), ("Cloud", "Fog"), ("Village", "City"), ("Street", "Highway"),
     ("House", "Apartment"), ("School", "College"), ("Hospital", "Clinic"), ("Shop", "Mall"), ("Park", "Garden"),
     ("Temple", "Mosque"), ("Library", "Museum"), ("Beach", "Desert"), ("Island", "Continent"), ("Earth", "Mars"),
-
-    # 👕 Body Parts & Clothing
     ("Eye", "Ear"), ("Hand", "Foot"), ("Hair", "Nails"), ("Shirt", "T-shirt"), ("Jacket", "Sweater"),
     ("Shoes", "Slippers"), ("Hat", "Cap"), ("Socks", "Gloves"), ("Ring", "Necklace"), ("Pants", "Shorts"),
-
-    # 🚗 Transport (Chalni road/hawa pe hi hai)
     ("Car", "Jeep"), ("Bus", "Train"), ("Airplane", "Helicopter"), ("Bicycle", "Motorcycle"), ("Boat", "Ship"),
     ("Truck", "Tractor"), ("Scooter", "Bike"), ("Rocket", "Jet"), ("Submarine", "Ship"), ("Taxi", "Ambulance"),
-
-    # ⚽ Sports & Misc Instruments
     ("Cricket", "Baseball"), ("Football", "Basketball"), ("Tennis", "Badminton"), ("Chess", "Carrom"), ("Ludo", "Monopoly"),
     ("Guitar", "Piano"), ("Flute", "Whistle"), ("Drum", "Bell"), ("Gold", "Silver"), ("Diamond", "Ruby")
 ]
-
 
 def init_game(chat_id):
     games[chat_id] = {
@@ -128,7 +96,7 @@ def init_game(chat_id):
         'imposter_word': "",
         'explanations': {}, 
         'votes': {},
-        'initiator_id': None # <-- NEW: Tracks who started the game
+        'initiator_id': None 
     }
 
 def fetch_ai_word_pair():
@@ -190,7 +158,7 @@ def conclude_explanation_phase(chat_id):
     for imp_id in game['imposter_ids']:
         if imp_id not in game['explanations']:
             p_name = clean_name(game['players'][imp_id]['name'])
-            imposter_failures.append(f"⚠️ **CRITICAL: No explanation was received from the imposter** [{p_name}](tg://user?id={imp_id})")
+            imposter_failures.append(f"⚠️ **CRITICAL: No explanation was received from a player** [{p_name}](tg://user?id={imp_id})")
     
     compiled_text = "📊 **EXPLANATION PHASE CONCLUDED!** 📊\n\n"
     if game['explanations']:
@@ -238,7 +206,7 @@ def handle_start(message):
 
     games[chat_id]['state'] = 'lobby'
     games[chat_id]['players'] = {}
-    games[chat_id]['initiator_id'] = message.from_user.id # <-- Saves the user who started it
+    games[chat_id]['initiator_id'] = message.from_user.id 
     
     text = (
         "🕵️‍♂️ **THE ARENA IS OPEN** 🕵️‍♂️\n\n"
@@ -338,9 +306,16 @@ def start_game_logic(chat_id):
     for uid in player_ids:
         try:
             if uid in game['imposter_ids']:
-                bot.send_message(uid, f"🐺 **CRITICAL ALERT: YOU ARE THE IMPOSTER!** 🐺\n\nYour secret word is: **{imposter_word}**\n\n➡️ **Provide your explanation here in the PM to blend in! Do not expose yourself!**", parse_mode="Markdown")
+                assigned_word = imposter_word
             else:
-                bot.send_message(uid, f"🧑‍🤝‍🧑 **YOUR ROLE: NORMAL PLAYER** 🧑‍🤝‍🧑\n\nYour secret word is: **{public_word}**\n\n➡️ **Provide your explanation here in the PM.**", parse_mode="Markdown")
+                assigned_word = public_word
+                
+            pm_text = (
+                f"🤫 **YOUR SECRET WORD:** **{assigned_word}**\n\n"
+                f"➡️ **Proceed to provide your explanation here in the PM.**\n\n"
+                f"⚠️ _Note: You do NOT know your identity! If your word is different from the majority, you are the Imposter. Defend your word carefully and play smart!_"
+            )
+            bot.send_message(uid, pm_text, parse_mode="Markdown")
         except:
             pass
 
@@ -455,7 +430,7 @@ def conclude_game_results(chat_id):
     bot.send_message(chat_id, results, parse_mode="Markdown")
     game['state'] = 'inactive'
 
-# --- NEW: SECURE END COMMAND ---
+# --- SECURE END COMMAND ---
 @bot.message_handler(commands=['end'])
 def end_game(message):
     if not is_group(message):
@@ -469,24 +444,20 @@ def end_game(message):
         bot.reply_to(message, "⚠️ **ACTION FAILED: No active game session is currently running in this group.**", parse_mode="Markdown")
         return
         
-    # Security Check: Is the user the initiator?
     is_initiator = (user_id == games[chat_id].get('initiator_id'))
     
-    # Security Check: Is the user a group Admin or Creator?
     is_admin = False
     try:
         member = bot.get_chat_member(chat_id, user_id)
         if member.status in ['administrator', 'creator']:
             is_admin = True
     except:
-        pass # Ignore API error if bot lacks certain rights, fallback to initiator check
+        pass 
         
     if not (is_initiator or is_admin):
-        # Strict Negative Message
         bot.reply_to(message, "❌ **ACCESS DENIED: Unauthorized execution.**\n\nOnly **Group Administrators** or the **user who initiated the game** are permitted to use the `/end` command.", parse_mode="Markdown")
         return
 
-    # If authorized, terminate the game
     games[chat_id]['state'] = 'inactive'
     bot.reply_to(message, "🛑 **ADMINISTRATIVE OVERRIDE: The active game session has been forcefully terminated.**", parse_mode="Markdown")
 
@@ -532,24 +503,26 @@ def claim_daily(message):
         
     user_id = str(message.from_user.id)
     user_name = clean_name(message.from_user.first_name)
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute("SELECT daily_claim FROM users WHERE user_id=?", (user_id,))
-    row = c.fetchone()
+    
+    user = users_collection.find_one({"_id": user_id})
+    row_claim = user.get("daily_claim") if user else None
     
     now = datetime.now()
     current_cycle = now.replace(hour=6, minute=0, second=0, microsecond=0) if now.hour >= 6 else (now - timedelta(days=1)).replace(hour=6, minute=0, second=0, microsecond=0)
     
     can_claim = False
-    if not row or not row[0]:
+    if not row_claim:
         can_claim = True
     else:
-        last_claim = datetime.fromisoformat(row[0])
+        last_claim = datetime.fromisoformat(row_claim)
         if last_claim < current_cycle: can_claim = True
             
     if can_claim:
-        add_points(user_id, user_name, 50)
-        c.execute("UPDATE users SET daily_claim=? WHERE user_id=?", (now.isoformat(), user_id))
+        users_collection.update_one(
+            {"_id": user_id},
+            {"$inc": {"points": 50}, "$set": {"name": user_name, "daily_claim": now.isoformat()}},
+            upsert=True
+        )
         bot.reply_to(message, "🎁 **DAILY BONUS AUTHORIZED!** 🎁\n\n💰 **+50 points** have been securely deposited into your account.\n⏳ _Return tomorrow after 6:00 AM IST for your next claim._", parse_mode="Markdown")
     else:
         next_claim = current_cycle + timedelta(days=1)
@@ -557,9 +530,6 @@ def claim_daily(message):
         h, rem = divmod(time_left.seconds, 3600)
         m, _ = divmod(rem, 60)
         bot.reply_to(message, f"❌ **ACCESS DENIED: You have already exhausted your daily claim quota for this cycle.**\n\n⏰ _Refresh available in:_ **{h}h {m}m** (Strictly after 6:00 AM)", parse_mode="Markdown")
-    
-    conn.commit()
-    conn.close()
 
 @bot.message_handler(commands=['userid'])
 def get_user_id(message):
@@ -570,5 +540,16 @@ def get_user_id(message):
     else:
         bot.reply_to(message, "ℹ️ **INSTRUCTION:** Please reply to a specific user's message with `/userid` to extract their unique identifier.", parse_mode="Markdown")
 
-print("🚀 Anti-Crash Elite Imposter Bot is running smoothly with Admin controls...")
+# ==========================================
+# 🌐 DUMMY WEB SERVER FOR RENDER
+# ==========================================
+def run_dummy_server():
+    port = int(os.environ.get("PORT", 8080))
+    handler = http.server.SimpleHTTPRequestHandler
+    with socketserver.TCPServer(("", port), handler) as httpd:
+        httpd.serve_forever()
+
+threading.Thread(target=run_dummy_server, daemon=True).start()
+
+print("🚀 Ultimate MongoDB Connected Imposter Bot is running...")
 bot.infinity_polling()
