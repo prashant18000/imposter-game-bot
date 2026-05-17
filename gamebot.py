@@ -3,14 +3,12 @@ from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 import random
 import threading
 import time
-import requests
-import urllib.parse
 import os
 import http.server
 import socketserver
 from datetime import datetime, timedelta
 
-# MongoDB ke liye naye packages
+# MongoDB ke liye packages
 from pymongo import MongoClient
 import certifi
 
@@ -53,39 +51,71 @@ def get_top_players():
     return [(u["_id"], u.get("name", "Player"), u.get("points", 0)) for u in users]
 
 # ==========================================
+# 🎮 150+ MASSIVE WORD PAIRS LIBRARY
+# ==========================================
+WORD_PAIRS = [
+    # 🍔 Food & Drinks (20)
+    ("Apple", "Orange"), ("Pizza", "Burger"), ("Tea", "Coffee"), ("Milk", "Juice"), 
+    ("Rice", "Wheat"), ("Butter", "Cheese"), ("Cake", "Pastry"), ("Biscuit", "Cookie"), 
+    ("Soup", "Salad"), ("Potato", "Tomato"), ("Onion", "Garlic"), ("Carrot", "Radish"), 
+    ("Lemon", "Lime"), ("Bread", "Roti"), ("Noodles", "Pasta"), ("Ice Cream", "Chocolate"), 
+    ("Peanut", "Almond"), ("Sugar", "Salt"), ("Jam", "Honey"), ("Watermelon", "Papaya"),
+    
+    # 🐾 Animals & Birds (22)
+    ("Tiger", "Lion"), ("Dog", "Wolf"), ("Cat", "Leopard"), ("Horse", "Donkey"), 
+    ("Rabbit", "Mouse"), ("Frog", "Toad"), ("Butterfly", "Moth"), ("Snake", "Earthworm"), 
+    ("Eagle", "Hawk"), ("Shark", "Dolphin"), ("Whale", "Shark"), ("Penguin", "Ostrich"), 
+    ("Monkey", "Gorilla"), ("Elephant", "Hippo"), ("Bear", "Panda"), ("Cow", "Buffalo"), 
+    ("Goat", "Sheep"), ("Hen", "Duck"), ("Crow", "Pigeon"), ("Parrot", "Peacock"), 
+    ("Ant", "Spider"), ("Bee", "Wasp"),
+    
+    # 💻 Tech & Daily Objects (31)
+    ("Laptop", "Desktop"), ("Phone", "Tablet"), ("Television", "Monitor"), ("Watch", "Clock"), 
+    ("Pen", "Marker"), ("Pencil", "Crayon"), ("Book", "Magazine"), ("Newspaper", "Magazine"), 
+    ("Chair", "Sofa"), ("Table", "Desk"), ("Fan", "Cooler"), ("Fridge", "Air Conditioner"), 
+    ("Glasses", "Goggles"), ("Backpack", "Suitcase"), ("Wallet", "Purse"), ("Key", "Lock"), 
+    ("Scissors", "Knife"), ("Spoon", "Fork"), ("Plate", "Bowl"), ("Bottle", "Jug"), 
+    ("Mirror", "Window"), ("Door", "Gate"), ("Bed", "Sofa"), ("Pillow", "Cushion"), 
+    ("Towel", "Blanket"), ("Soap", "Shampoo"), ("Toothbrush", "Comb"), ("Umbrella", "Raincoat"), 
+    ("Candle", "Bulb"), ("Matchbox", "Lighter"), ("Camera", "Binoculars"),
+    
+    # 🌍 Nature, Places & Materials (24)
+    ("Sun", "Moon"), ("Star", "Planet"), ("River", "Ocean"), ("Lake", "Pond"), 
+    ("Mountain", "Hill"), ("Forest", "Jungle"), ("Rain", "Snow"), ("Cloud", "Fog"), 
+    ("Village", "City"), ("Street", "Highway"), ("House", "Apartment"), ("School", "College"), 
+    ("Hospital", "Clinic"), ("Shop", "Mall"), ("Park", "Garden"), ("Temple", "Mosque"), 
+    ("Library", "Museum"), ("Beach", "Desert"), ("Island", "Continent"), ("Earth", "Mars"), 
+    ("Gold", "Silver"), ("Diamond", "Ruby"), ("Iron", "Steel"), ("Coal", "Wood"),
+    
+    # 👕 Body Parts & Clothing (13)
+    ("Eye", "Ear"), ("Hand", "Foot"), ("Hair", "Nails"), ("Shirt", "T-shirt"), 
+    ("Jacket", "Sweater"), ("Shoes", "Slippers"), ("Hat", "Cap"), ("Socks", "Gloves"), 
+    ("Ring", "Necklace"), ("Pants", "Shorts"), ("Tie", "Belt"), ("Scarf", "Muffler"), 
+    ("Perfume", "Deodorant"),
+    
+    # 🚗 Transport (12)
+    ("Car", "Jeep"), ("Bus", "Train"), ("Airplane", "Helicopter"), ("Bicycle", "Motorcycle"), 
+    ("Boat", "Ship"), ("Truck", "Tractor"), ("Scooter", "Bike"), ("Rocket", "Jet"), 
+    ("Submarine", "Ship"), ("Taxi", "Ambulance"), ("Metro", "Train"), ("Skateboard", "Roller Skates"),
+    
+    # ⚽ Sports & Professions (15)
+    ("Cricket", "Baseball"), ("Football", "Basketball"), ("Tennis", "Badminton"), ("Chess", "Carrom"), 
+    ("Ludo", "Monopoly"), ("Guitar", "Piano"), ("Flute", "Whistle"), ("Drum", "Bell"), 
+    ("Doctor", "Nurse"), ("Teacher", "Principal"), ("Police", "Army"), ("Pilot", "Driver"), 
+    ("Actor", "Singer"), ("Painter", "Writer"), ("Chef", "Waiter"),
+    
+    # 🌀 Extra Tricky Mixed Pairs (19)
+    ("Pen", "Pencil"), ("Milk", "Water"), ("Apple", "Mango"), ("Chair", "Table"), 
+    ("Shoes", "Socks"), ("Book", "Notebook"), ("Sun", "Star"), ("Rain", "Wind"), 
+    ("Fire", "Water"), ("Ice", "Snow"), ("Paper", "Plastic"), ("Glass", "Plastic"), 
+    ("Wood", "Metal"), ("Cotton", "Silk"), ("Leather", "Rubber"), ("Sand", "Soil"), 
+    ("Brick", "Stone"), ("Broom", "Mop"), ("Dustbin", "Bucket")
+]
+
+# ==========================================
 # 🎮 GAME LOGIC & STATE MANAGEMENT
 # ==========================================
 games = {}
-
-WORD_PAIRS = [
-    ("Apple", "Mango"), ("Cat", "Dog"), ("Pen", "Pencil"),
-    ("Sun", "Moon"), ("Car", "Bike"), ("Milk", "Water"),
-    ("Book", "Notebook"), ("Chair", "Table"), ("Shoes", "Socks"),
-    ("Tiger", "Lion"), ("Dog", "Wolf"), ("Cat", "Leopard"), ("Horse", "Donkey"), ("Rabbit", "Mouse"),
-    ("Frog", "Toad"), ("Butterfly", "Moth"), ("Snake", "Earthworm"), ("Eagle", "Hawk"), ("Shark", "Dolphin"),
-    ("Whale", "Shark"), ("Penguin", "Ostrich"), ("Monkey", "Gorilla"), ("Elephant", "Hippo"), ("Bear", "Panda"),
-    ("Cow", "Buffalo"), ("Goat", "Sheep"), ("Hen", "Duck"), ("Crow", "Pigeon"), ("Parrot", "Peacock"),
-    ("Laptop", "Desktop"), ("Phone", "Tablet"), ("Television", "Monitor"), ("Watch", "Wall Clock"), ("Pen", "Marker"),
-    ("Pencil", "Crayon"), ("Book", "Magazine"), ("Newspaper", "Magazine"), ("Chair", "Sofa"), ("Table", "Desk"),
-    ("Fan", "Cooler"), ("Refrigerator", "Air Conditioner"), ("Glasses", "Goggles"), ("Backpack", "Suitcase"), ("Wallet", "Purse"),
-    ("Key", "Lock"), ("Scissors", "Knife"), ("Spoon", "Fork"), ("Plate", "Bowl"), ("Bottle", "Jug"),
-    ("Mirror", "Window"), ("Door", "Gate"), ("Bed", "Sofa"), ("Pillow", "Cushion"), ("Towel", "Blanket"),
-    ("Soap", "Shampoo"), ("Toothbrush", "Comb"), ("Umbrella", "Raincoat"), ("Candle", "Bulb"), ("Matchbox", "Lighter"),
-    ("Apple", "Orange"), ("Banana", "Mango"), ("Pizza", "Burger"), ("Tea", "Coffee"), ("Milk", "Juice"),
-    ("Cake", "Pastry"), ("Biscuit", "Cookie"), ("Chocolate", "Candy"), ("Ice Cream", "Chocolate"), ("Rice", "Wheat"),
-    ("Soup", "Salad"), ("Potato", "Tomato"), ("Onion", "Garlic"), ("Carrot", "Radish"), ("Lemon", "Orange"),
-    ("Watermelon", "Papaya"), ("Grapes", "Berries"), ("Butter", "Cheese"), ("Bread", "Roti"), ("Noodles", "Pasta"),
-    ("Sun", "Moon"), ("Star", "Planet"), ("River", "Ocean"), ("Lake", "Pond"), ("Mountain", "Hill"),
-    ("Forest", "Jungle"), ("Rain", "Snow"), ("Cloud", "Fog"), ("Village", "City"), ("Street", "Highway"),
-    ("House", "Apartment"), ("School", "College"), ("Hospital", "Clinic"), ("Shop", "Mall"), ("Park", "Garden"),
-    ("Temple", "Mosque"), ("Library", "Museum"), ("Beach", "Desert"), ("Island", "Continent"), ("Earth", "Mars"),
-    ("Eye", "Ear"), ("Hand", "Foot"), ("Hair", "Nails"), ("Shirt", "T-shirt"), ("Jacket", "Sweater"),
-    ("Shoes", "Slippers"), ("Hat", "Cap"), ("Socks", "Gloves"), ("Ring", "Necklace"), ("Pants", "Shorts"),
-    ("Car", "Jeep"), ("Bus", "Train"), ("Airplane", "Helicopter"), ("Bicycle", "Motorcycle"), ("Boat", "Ship"),
-    ("Truck", "Tractor"), ("Scooter", "Bike"), ("Rocket", "Jet"), ("Submarine", "Ship"), ("Taxi", "Ambulance"),
-    ("Cricket", "Baseball"), ("Football", "Basketball"), ("Tennis", "Badminton"), ("Chess", "Carrom"), ("Ludo", "Monopoly"),
-    ("Guitar", "Piano"), ("Flute", "Whistle"), ("Drum", "Bell"), ("Gold", "Silver"), ("Diamond", "Ruby")
-]
 
 def init_game(chat_id):
     games[chat_id] = {
@@ -98,18 +128,6 @@ def init_game(chat_id):
         'votes': {},
         'initiator_id': None 
     }
-
-def fetch_ai_word_pair():
-    prompt = "Give me two simple, easily explainable, related English nouns used in daily life, separated strictly by a single comma (e.g., Apple, Mango). Do not include any other text."
-    try:
-        url = f"https://text.pollinations.ai/{urllib.parse.quote(prompt)}"
-        res = requests.get(url, timeout=5)
-        if res.status_code == 200 and "," in res.text:
-            parts = res.text.split(",")
-            return parts[0].strip().capitalize(), parts[1].strip().capitalize()
-    except:
-        pass
-    return random.choice(WORD_PAIRS)
 
 def is_group(message):
     return message.chat.type in ['group', 'supergroup']
@@ -189,7 +207,7 @@ def handle_start(message):
         text = (
             "🕵️‍♂️ **SYSTEM ACCESS GRANTED** 🕵️‍♂️\n\n"
             f"Greetings, **{safe_name}**.\n\n"
-            "You have entered the secure mainframe of **The Secret Word Imposter**. "
+            "You have entered the secure mainframe of **Gupt Shabd (The Blind Undercover)**. "
             "This bot analyzes deception, strategy, and manipulation.\n\n"
             "🧠 **Your Objective:** When added to a group, analyze the secret words, identify the liars, and amass points to dominate the global leaderboard.\n\n"
             "Use `/help` to view the comprehensive protocol manual. Good luck."
@@ -292,7 +310,8 @@ def start_game_logic(chat_id):
     elif num_players < 16: num_imposters = 5
     else: num_imposters = 5 + ((num_players - 12) // 4) * 2
 
-    public_word, imposter_word = fetch_ai_word_pair()
+    # 100% Random & Cache-Free Logic
+    public_word, imposter_word = random.choice(WORD_PAIRS)
     game['public_word'], game['imposter_word'] = public_word, imposter_word
     
     player_ids = list(game['players'].keys())
@@ -551,5 +570,5 @@ def run_dummy_server():
 
 threading.Thread(target=run_dummy_server, daemon=True).start()
 
-print("🚀 Ultimate MongoDB Connected Imposter Bot is running...")
+print("🚀 Ultimate Gupt Shabd Bot is running...")
 bot.infinity_polling()
