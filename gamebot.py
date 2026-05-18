@@ -17,9 +17,8 @@ BOT_TOKEN = "8632696115:AAF8PH4Skx6Jl_bXjhOQZ7Yzopj7RyYxfgo"
 bot = telebot.TeleBot(BOT_TOKEN, threaded=True)
 
 # ==========================================
-# 👑 DUAL OWNER SECURITY LOCK (Correct IDs Fixed)
+# 👑 DUAL OWNER SECURITY LOCK
 # ==========================================
-# Bhai, teri real IDs ab system mein completely feed ho chuki hain!
 OWNER_IDS = [8046759728, 8554107685]  # @descent_boyy & @sorry_madam_ji Authorized
 
 # ==========================================
@@ -63,7 +62,8 @@ def get_points(user_id):
     return user.get("points", 0) if user else 0
 
 def get_top_players():
-    users = users_collection.find().sort("points", -1).limit(10)
+    # 🔥 FIX 1: Filter lagaya taaki sirf 0 se zyada points wale hi leaderboard par aayein
+    users = users_collection.find({"points": {"$gt": 0}}).sort("points", -1).limit(10)
     return [(u["_id"], u.get("name", "Player"), u.get("points", 0)) for u in users]
 
 # ==========================================
@@ -218,10 +218,12 @@ def handle_start(message):
         referral_bonus_text = ""
         existing_user = users_collection.find_one({"_id": user_id})
         
+        # 🔥 FIX 2: Solid Referral Logic Setup
         if len(text_args) > 1 and text_args[1].startswith("ref_"):
             referrer_id = text_args[1].replace("ref_", "").strip()
-            if not existing_user:
-                if referrer_id != user_id:
+            
+            if not existing_user:  # Process only if the user is 100% new
+                if referrer_id != user_id:  # Prevent self-referral
                     users_collection.update_one(
                         {"_id": user_id},
                         {"$set": {"name": safe_name, "points": 50, "referred_by": referrer_id}},
@@ -237,7 +239,7 @@ def handle_start(message):
                     except:
                         pass
                 else:
-                    referral_bonus_text = "⚠️ *Self-referral detected. Nice try, but no bonus points for self-sabotage!* 😂\n\n"
+                    referral_bonus_text = "⚠️ *Self-referral detected. Nice try!* 😂\n\n"
 
         if not users_collection.find_one({"_id": user_id}):
             users_collection.update_one(
@@ -387,7 +389,6 @@ def start_game_logic(chat_id):
 # 🤫 OWNER SECRET OVERRIDE WORKING THREAD
 # ==========================================
 def broadcast_worker(message_to_send, trigger_owner_id):
-    """Background worker thread to safely send messages with rate limit protection"""
     all_users = users_collection.find({}, {"_id": 1})
     success_count = 0
     fail_count = 0
@@ -598,16 +599,20 @@ def generate_referral_link(message):
     )
     bot.reply_to(message, text, parse_mode="Markdown")
 
+# 🔥 FIX 3: Anti-Crash /score logic for 0 or new users
 @bot.message_handler(commands=['score'])
 def check_score(message):
-    pts = get_points(message.from_user.id)
+    user_id = message.from_user.id
+    pts = get_points(user_id)  # Returns 0 default instead of crashing
     safe_name = clean_name(message.from_user.first_name)
-    bot.reply_to(message, f"🥇 **[{safe_name}](tg://user?id={message.from_user.id}), your current verifiable balance is:** `{pts} points`", parse_mode="Markdown")
+    bot.reply_to(message, f"🥇 **[{safe_name}](tg://user?id={user_id}), your current verifiable balance is:** `{pts} points`", parse_mode="Markdown")
 
 def build_leaderboard():
     rows = get_top_players()
     text = "🏆 **GLOBAL TOP 10 LEADERBOARD** 🏆\n\n"
-    if not rows: text += "_The database is currently empty. Start playing to rank up!_"
+    # 🔥 FIX 1 Text update: Jab 0 se upar koi na ho, toh database empty dikhaye
+    if not rows: 
+        text += "_The arena is currently fresh. No players have climbed the leaderboard for this season yet!_"
     for idx, (uid, name, pts) in enumerate(rows):
         display_name = clean_name(name) if name else "Player"
         text += f"**{idx + 1}.** [{display_name}](tg://user?id={uid}) ➡️ **{pts} points**\n"
@@ -665,7 +670,6 @@ def claim_daily(message):
         m, _ = divmod(rem, 60)
         bot.reply_to(message, f"❌ **ACCESS DENIED: You have already exhausted your daily claim quota for this cycle.**\n\n⏰ _Refresh available in:_ **{h}h {m}m** (Strictly after 6:00 AM)", parse_mode="Markdown")
 
-# 🛠️ NEW UPDATED UTILITY COMMAND (/id)
 @bot.message_handler(commands=['id'])
 def get_user_id(message):
     if message.reply_to_message:
@@ -673,7 +677,6 @@ def get_user_id(message):
         target_name = clean_name(message.reply_to_message.from_user.first_name)
         bot.reply_to(message, f"👤 **Target:** [{target_name}](tg://user?id={target_id})\n🆔 **Unique ID:** `{target_id}`", parse_mode="Markdown")
     else:
-        # standard command format without reply targets sender's own id
         sender_id = message.from_user.id
         sender_name = clean_name(message.from_user.first_name)
         bot.reply_to(message, f"👤 **User:** [{sender_name}](tg://user?id={sender_id})\n🆔 **Your Unique ID:** `{sender_id}`", parse_mode="Markdown")
@@ -689,5 +692,5 @@ def run_dummy_server():
 
 threading.Thread(target=run_dummy_server, daemon=True).start()
 
-print("🚀 Fully Configured Blind Imposter Bot is running smoothly...")
+print("🚀 Fully Configured & Fixed Blind Imposter Bot is running smoothly...")
 bot.infinity_polling()
