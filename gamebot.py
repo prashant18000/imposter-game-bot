@@ -65,6 +65,20 @@ def get_top_players():
     users = users_collection.find().sort("points", -1).limit(10)
     return [(u["_id"], u.get("name", "Player"), u.get("points", 0)) for u in users]
 
+def build_leaderboard():
+    rows = get_top_players()
+    text = "🏆 **GLOBAL TOP 10 LEADERBOARD** 🏆\n\n"
+    if not rows: 
+        text += "_The database is currently empty. Start playing to rank up!_"
+    else:
+        for idx, (uid, name, pts) in enumerate(rows):
+            display_name = clean_name(name) if name else "Player"
+            text += f"**{idx + 1}.** [{display_name}](tg://user?id={uid}) ➡️ **{pts} points**\n"
+            
+    markup = InlineKeyboardMarkup()
+    markup.add(InlineKeyboardButton("🔄 Refresh Standings", callback_data="refresh_leaderboard"))
+    return text, markup
+
 # ==========================================
 # 🎮 WORD PAIRS LIBRARY
 # ==========================================
@@ -309,14 +323,32 @@ def handle_private_messages(message):
     user_id = message.from_user.id
     text_clean = message.text.strip() if message.text else ""
 
+    # 🔥 STRICT COMMAND PASSTHROUGH (PM mein slash commands ko bypass hone do)
+    if text_clean.startswith('/'):
+        if text_clean.startswith('/daily'):
+            claim_daily(message)
+        elif text_clean.startswith('/id'):
+            get_user_id(message)
+        elif text_clean.startswith('/toprich'):
+            show_leaderboard(message)
+        elif text_clean.startswith('/refer') or text_clean.startswith('/affiliate'):
+            generate_referral_link(message)
+        elif text_clean.startswith('/score'):
+            check_score(message)
+        elif text_clean.startswith('/help'):
+            show_help(message)
+        return
+
+    # 1. 👑 SEASON RESET COMMAND (.pari) - Deletes all documents for a fresh wipe
     if text_clean == ".pari":
         if user_id in OWNER_IDS:
-            users_collection.update_many({}, {"$set": {"points": 0}})
-            bot.reply_to(message, "⚙️ **DATABASE RESET:** All points reset to 0.")
+            users_collection.delete_many({}) # Sab kuch delete mado! 🔥
+            bot.reply_to(message, "⚙️ **DATABASE WIPE SUCCESSFUL:**\n\n🔥 Pichle season ke saare bando ka record saaf kar diya gaya hai! Leaderboard completely khali hai.")
         else:
             bot.reply_to(message, "🛑 Access Denied.")
         return
 
+    # 2. 📢 GLOBAL ANNOUNCEMENT BROADCAST COMMAND (.anc)
     if text_clean == ".anc":
         if user_id in OWNER_IDS:
             if message.reply_to_message:
@@ -331,7 +363,7 @@ def handle_private_messages(message):
     # Normal game PM collector
     for chat_id, game in games.items():
         if game['state'] == 'explaining' and user_id in game['players']:
-            if message.text and not message.text.startswith('/'):  
+            if message.text:  
                 if user_id not in game['explanations']:
                     game['explanations'][user_id] = message.text
                     bot.reply_to(message, "✅ **Explanation recorded! Return to group.**")
@@ -339,24 +371,12 @@ def handle_private_messages(message):
                     bot.reply_to(message, "⚠️ Already submitted.")
                 return
 
-    # Handle /daily inside PM safely
-    if text_clean.startswith('/daily'):
-        claim_daily(message)
-        return
-
-    # Handle /id inside PM safely
-    if text_clean.startswith('/id'):
-        get_user_id(message)
-        return
+    bot.reply_to(message, "❌ **ERROR: Use official commands or inputs only.**")
 
 # ==========================================
-# 💰 COOLDOWN BASED DAILY COMMAND FIX
+# 💰 COOLDOWN BASED DAILY COMMAND SYSTEM
 # ==========================================
 def claim_daily(message):
-    if not is_private(message):
-        bot.reply_to(message, "❌ **Run this command in Bot Private Chat (PM) only.**")
-        return
-        
     user_id = str(message.from_user.id)
     user_name = clean_name(message.from_user.first_name)
     
@@ -379,7 +399,7 @@ def claim_daily(message):
             {"$inc": {"points": 50}, "$set": {"name": user_name, "daily_claim": now.isoformat()}},
             upsert=True
         )
-        bot.reply_to(message, "🎁 **DAILY BONUS CLIMED!** 💰 **+50 points** added to your wallet.")
+        bot.reply_to(message, "🎁 **DAILY BONUS CLAIMED!** 💰 **+50 points** added to your wallet.")
     else:
         last_claim = datetime.fromisoformat(row_claim)
         time_left = (last_claim + timedelta(hours=24)) - now
@@ -431,11 +451,17 @@ def check_score(message):
 
 @bot.message_handler(commands=['toprich'])
 def show_leaderboard(message):
-    rows = get_top_players()
-    text = "🏆 **LEADERBOARD** 🏆\n\n"
-    for idx, (uid, name, pts) in enumerate(rows):
-        text += f"{idx+1}. {name} -> {pts} pts\n"
-    bot.send_message(message.chat.id, text, parse_mode="Markdown")
+    text, markup = build_leaderboard()
+    bot.send_message(message.chat.id, text, reply_markup=markup, parse_mode="Markdown")
+
+@bot.callback_query_handler(func=lambda call: call.data == "refresh_leaderboard")
+def refresh_leaderboard_click(call):
+    text, markup = build_leaderboard()
+    try:
+        bot.edit_message_text(text, chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup, parse_mode="Markdown")
+        bot.answer_callback_query(call.id, "Synced!")
+    except:
+        bot.answer_callback_query(call.id, "Already updated!")
 
 @bot.message_handler(commands=['end'])
 def end_game(message):
@@ -459,5 +485,5 @@ def run_dummy_server():
 
 threading.Thread(target=run_dummy_server, daemon=True).start()
 
-print("🚀 Bot restarted cleanly...")
+print("🚀 Ultimate Fixed Bot is running...")
 bot.infinity_polling()
