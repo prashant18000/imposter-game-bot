@@ -16,9 +16,11 @@ import certifi
 BOT_TOKEN = "8632696115:AAF8PH4Skx6Jl_bXjhOQZ7Yzopj7RyYxfgo"
 bot = telebot.TeleBot(BOT_TOKEN, threaded=True)
 
-# --- 👑 OWNER USER ID (SECURITY LOCK) ---
-# Bhai, apni sahi Telegram User ID yahan daal dena taaki sirf tum hi broadcast aur reset kar sako.
-OWNER_ID = 6115696115  
+# ==========================================
+# 👑 DUAL OWNER SECURITY LOCK (Correct IDs Fixed)
+# ==========================================
+# Bhai, teri real IDs ab system mein completely feed ho chuki hain!
+OWNER_IDS = [8046759728, 8554107685]  # @descent_boyy & @sorry_madam_ji Authorized
 
 # ==========================================
 # ☁️ MONGODB CLOUD DATABASE SETUP
@@ -293,7 +295,7 @@ def show_help(message):
         "• `/daily` - Claim 50 free points daily (Executes **ONLY** in bot PM after 6:00 AM).\n"
         "• `/refer` - Generate your lifetime affiliate link to earn passive coins!\n\n"
         "**⚙️ UTILITIES:**\n"
-        "• `/userid` - Reply to someone with this to extract their unique identifier.\n\n"
+        "• `/id` - Reply to someone with this to extract their unique identifier.\n\n"
         "**🧠 REWARDS SYSTEM:**\n"
         "• Public Victory: **+10 points** to innocents.\n"
         "• Imposter Victory: **+25 points** to imposters."
@@ -382,9 +384,9 @@ def start_game_logic(chat_id):
     threading.Thread(target=explanation_timer, args=(chat_id,)).start()
 
 # ==========================================
-# 🤫 OWNER SECRET OVERRIDE COMMANDS (.pari & .anc)
+# 🤫 OWNER SECRET OVERRIDE WORKING THREAD
 # ==========================================
-def broadcast_worker(message_to_send):
+def broadcast_worker(message_to_send, trigger_owner_id):
     """Background worker thread to safely send messages with rate limit protection"""
     all_users = users_collection.find({}, {"_id": 1})
     success_count = 0
@@ -392,16 +394,14 @@ def broadcast_worker(message_to_send):
     
     for user in all_users:
         try:
-            # Copy format me text, photo, audio ya sticker jo bhi ho, send kar dega
             bot.copy_message(chat_id=int(user["_id"]), from_chat_id=message_to_send.chat.id, message_id=message_to_send.message_id)
             success_count += 1
-            time.sleep(0.3)  # Safe delay to prevent Telegram FloodWait limits 🛑
+            time.sleep(0.3)  
         except:
             fail_count += 1
             
-    # Send report to owner after completion
     try:
-        bot.send_message(OWNER_ID, f"📢 **BROADCAST PROTOCOL COMPLETE** 📢\n\n✅ Sent Successfully: `{success_count}` users.\n❌ Failed/Blocked: `{fail_count}` users.", parse_mode="Markdown")
+        bot.send_message(trigger_owner_id, f"📢 **BROADCAST PROTOCOL COMPLETE** 📢\n\n✅ Sent Successfully: `{success_count}` users.\n❌ Failed/Blocked: `{fail_count}` users.", parse_mode="Markdown")
     except:
         pass
 
@@ -412,7 +412,7 @@ def handle_private_messages(message):
 
     # 1. 👑 SEASON RESET COMMAND (.pari)
     if text_clean == ".pari":
-        if user_id == OWNER_ID:
+        if user_id in OWNER_IDS:
             users_collection.update_many({}, {"$set": {"points": 0}})
             bot.reply_to(message, "⚙️ **DATABASE OVERRIDE SUCCESSFUL:**\n\n🔥 All player points have been forcefully reset to `0`. The leaderboard is now completely empty!", parse_mode="Markdown")
         else:
@@ -421,12 +421,11 @@ def handle_private_messages(message):
 
     # 2. 📢 GLOBAL ANNOUNCEMENT BROADCAST COMMAND (.anc)
     if text_clean == ".anc":
-        if user_id == OWNER_ID:
+        if user_id in OWNER_IDS:
             if message.reply_to_message:
                 target_msg = message.reply_to_message
                 bot.reply_to(message, "🚀 **ANNOUNCEMENT ENGAGED:** Starting background transmission to all database users safely...", parse_mode="Markdown")
-                # Threading prevents the bot from lagging while sending messages
-                threading.Thread(target=broadcast_worker, args=(target_msg,), daemon=True).start()
+                threading.Thread(target=broadcast_worker, args=(target_msg, user_id), daemon=True).start()
             else:
                 bot.reply_to(message, "❌ **PROTOCOL ERROR:** Please use this command by **REPLYING** to the text/photo message you want to broadcast.", parse_mode="Markdown")
         else:
@@ -436,7 +435,7 @@ def handle_private_messages(message):
     # Normal game logic for collecting word descriptions
     for chat_id, game in games.items():
         if game['state'] == 'explaining' and user_id in game['players']:
-            if message.text:  # Check if it is standard text description
+            if message.text:  
                 if user_id not in game['explanations']:
                     game['explanations'][user_id] = message.text
                     bot.reply_to(message, "✅ **Your explanation has been securely encrypted and recorded. Return to the group.**", parse_mode="Markdown")
@@ -666,14 +665,18 @@ def claim_daily(message):
         m, _ = divmod(rem, 60)
         bot.reply_to(message, f"❌ **ACCESS DENIED: You have already exhausted your daily claim quota for this cycle.**\n\n⏰ _Refresh available in:_ **{h}h {m}m** (Strictly after 6:00 AM)", parse_mode="Markdown")
 
-@bot.message_handler(commands=['userid'])
+# 🛠️ NEW UPDATED UTILITY COMMAND (/id)
+@bot.message_handler(commands=['id'])
 def get_user_id(message):
     if message.reply_to_message:
         target_id = message.reply_to_message.from_user.id
         target_name = clean_name(message.reply_to_message.from_user.first_name)
         bot.reply_to(message, f"👤 **Target:** [{target_name}](tg://user?id={target_id})\n🆔 **Unique ID:** `{target_id}`", parse_mode="Markdown")
     else:
-        bot.reply_to(message, "ℹ️ **INSTRUCTION:** Please reply to a specific user's message with `/userid` to extract their unique identifier.", parse_mode="Markdown")
+        # standard command format without reply targets sender's own id
+        sender_id = message.from_user.id
+        sender_name = clean_name(message.from_user.first_name)
+        bot.reply_to(message, f"👤 **User:** [{sender_name}](tg://user?id={sender_id})\n🆔 **Your Unique ID:** `{sender_id}`", parse_mode="Markdown")
 
 # ==========================================
 # 🌐 DUMMY WEB SERVER FOR RENDER
@@ -686,5 +689,5 @@ def run_dummy_server():
 
 threading.Thread(target=run_dummy_server, daemon=True).start()
 
-print("🚀 Secure Blind Imposter Bot with Broadcast Option is running...")
+print("🚀 Fully Configured Blind Imposter Bot is running smoothly...")
 bot.infinity_polling()
