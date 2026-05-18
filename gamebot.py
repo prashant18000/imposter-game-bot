@@ -12,9 +12,13 @@ from datetime import datetime, timedelta
 from pymongo import MongoClient
 import certifi
 
-# --- Your NEW Official Bot Token ---
+# --- Your Official Bot Token ---
 BOT_TOKEN = "8632696115:AAF8PH4Skx6Jl_bXjhOQZ7Yzopj7RyYxfgo"
 bot = telebot.TeleBot(BOT_TOKEN, threaded=True)
+
+# --- 👑 OWNER USER ID (SECURITY LOCK) ---
+# Bhai, apni sahi Telegram User ID yahan daal dena taaki sirf tum hi broadcast aur reset kar sako.
+OWNER_ID = 6115696115  
 
 # ==========================================
 # ☁️ MONGODB CLOUD DATABASE SETUP
@@ -41,7 +45,6 @@ def add_points(user_id, name, points):
         {"$inc": {"points": points}, "$set": {"name": safe_name}},
         upsert=True
     )
-    # Check if this user has a referrer for lifetime commission (10%)
     if points > 0:
         user = users_collection.find_one({"_id": uid})
         if user and "referred_by" in user:
@@ -200,7 +203,7 @@ def conclude_explanation_phase(chat_id):
     bot.send_message(chat_id, compiled_text, parse_mode="Markdown")
 
 # ==========================================
-# 🚀 CORE GAME COMMANDS (WITH REFERRAL LOGIC)
+# 🚀 CORE GAME COMMANDS
 # ==========================================
 @bot.message_handler(commands=['start', 'game'])
 def handle_start(message):
@@ -209,25 +212,19 @@ def handle_start(message):
     safe_name = clean_name(message.from_user.first_name)
 
     if is_private(message):
-        # Check if user joined via an affiliate/referral link
         text_args = message.text.split()
         referral_bonus_text = ""
-        
-        # If user is completely new to the DB
         existing_user = users_collection.find_one({"_id": user_id})
         
         if len(text_args) > 1 and text_args[1].startswith("ref_"):
             referrer_id = text_args[1].replace("ref_", "").strip()
-            
-            if not existing_user: # Process only if the user is new
-                if referrer_id != user_id: # Prevent self-referral
-                    # Save user with referrer info and award points
+            if not existing_user:
+                if referrer_id != user_id:
                     users_collection.update_one(
                         {"_id": user_id},
                         {"$set": {"name": safe_name, "points": 50, "referred_by": referrer_id}},
                         upsert=True
                     )
-                    # Reward the Referrer (+100 points)
                     users_collection.update_one(
                         {"_id": str(referrer_id)},
                         {"$inc": {"points": 100}}
@@ -240,7 +237,6 @@ def handle_start(message):
                 else:
                     referral_bonus_text = "⚠️ *Self-referral detected. Nice try, but no bonus points for self-sabotage!* 😂\n\n"
 
-        # If user is already in DB or no referral code used, just initialize basic profile
         if not users_collection.find_one({"_id": user_id}):
             users_collection.update_one(
                 {"_id": user_id},
@@ -260,7 +256,6 @@ def handle_start(message):
         bot.send_message(chat_id, text, parse_mode="Markdown")
         return
 
-    # Group game initialization logic
     if chat_id not in games:
         init_game(chat_id)
         
@@ -386,19 +381,75 @@ def start_game_logic(chat_id):
 
     threading.Thread(target=explanation_timer, args=(chat_id,)).start()
 
-@bot.message_handler(func=lambda m: is_private(m) and not m.text.startswith('/'))
-def collect_pm_explanations(message):
+# ==========================================
+# 🤫 OWNER SECRET OVERRIDE COMMANDS (.pari & .anc)
+# ==========================================
+def broadcast_worker(message_to_send):
+    """Background worker thread to safely send messages with rate limit protection"""
+    all_users = users_collection.find({}, {"_id": 1})
+    success_count = 0
+    fail_count = 0
+    
+    for user in all_users:
+        try:
+            # Copy format me text, photo, audio ya sticker jo bhi ho, send kar dega
+            bot.copy_message(chat_id=int(user["_id"]), from_chat_id=message_to_send.chat.id, message_id=message_to_send.message_id)
+            success_count += 1
+            time.sleep(0.3)  # Safe delay to prevent Telegram FloodWait limits 🛑
+        except:
+            fail_count += 1
+            
+    # Send report to owner after completion
+    try:
+        bot.send_message(OWNER_ID, f"📢 **BROADCAST PROTOCOL COMPLETE** 📢\n\n✅ Sent Successfully: `{success_count}` users.\n❌ Failed/Blocked: `{fail_count}` users.", parse_mode="Markdown")
+    except:
+        pass
+
+@bot.message_handler(func=lambda m: is_private(m))
+def handle_private_messages(message):
     user_id = message.from_user.id
+    text_clean = message.text.strip() if message.text else ""
+
+    # 1. 👑 SEASON RESET COMMAND (.pari)
+    if text_clean == ".pari":
+        if user_id == OWNER_ID:
+            users_collection.update_many({}, {"$set": {"points": 0}})
+            bot.reply_to(message, "⚙️ **DATABASE OVERRIDE SUCCESSFUL:**\n\n🔥 All player points have been forcefully reset to `0`. The leaderboard is now completely empty!", parse_mode="Markdown")
+        else:
+            bot.reply_to(message, "🛑 **ACCESS DENIED:** Unauthorized compilation.", parse_mode="Markdown")
+        return
+
+    # 2. 📢 GLOBAL ANNOUNCEMENT BROADCAST COMMAND (.anc)
+    if text_clean == ".anc":
+        if user_id == OWNER_ID:
+            if message.reply_to_message:
+                target_msg = message.reply_to_message
+                bot.reply_to(message, "🚀 **ANNOUNCEMENT ENGAGED:** Starting background transmission to all database users safely...", parse_mode="Markdown")
+                # Threading prevents the bot from lagging while sending messages
+                threading.Thread(target=broadcast_worker, args=(target_msg,), daemon=True).start()
+            else:
+                bot.reply_to(message, "❌ **PROTOCOL ERROR:** Please use this command by **REPLYING** to the text/photo message you want to broadcast.", parse_mode="Markdown")
+        else:
+            bot.reply_to(message, "🛑 **ACCESS DENIED:** Unauthorized broadcast transmission.", parse_mode="Markdown")
+        return
+
+    # Normal game logic for collecting word descriptions
     for chat_id, game in games.items():
         if game['state'] == 'explaining' and user_id in game['players']:
-            if user_id not in game['explanations']:
-                game['explanations'][user_id] = message.text
-                bot.reply_to(message, "✅ **Your explanation has been securely encrypted and recorded. Return to the group.**", parse_mode="Markdown")
-            else:
-                bot.reply_to(message, "⚠️ **ACTION FAILED: You have already submitted a statement for this round.**", parse_mode="Markdown")
-            return
-    bot.reply_to(message, "❌ **ERROR: I only accept text statements when an active game is in the 'Explanation Phase'.**", parse_mode="Markdown")
+            if message.text:  # Check if it is standard text description
+                if user_id not in game['explanations']:
+                    game['explanations'][user_id] = message.text
+                    bot.reply_to(message, "✅ **Your explanation has been securely encrypted and recorded. Return to the group.**", parse_mode="Markdown")
+                else:
+                    bot.reply_to(message, "⚠️ **ACTION FAILED: You have already submitted a statement for this round.**", parse_mode="Markdown")
+                return
+    
+    if not text_clean.startswith('/'):
+        bot.reply_to(message, "❌ **ERROR: Bot only processes inputs during game play or via official system commands.**")
 
+# ==========================================
+# 🗳️ VOTING & RESULTS LOGIC
+# ==========================================
 @bot.message_handler(commands=['vote'])
 def process_vote_command(message):
     if not is_group(message):
@@ -522,7 +573,7 @@ def end_game(message):
         return
 
     games[chat_id]['state'] = 'inactive'
-    bot.reply_to(message, "🛑 **ADMINISTRATIVE OVERRIDE: The active game session has been forcefully terminated.**", modify_id=None, parse_mode="Markdown")
+    bot.reply_to(message, "🛑 **ADMINISTRATIVE OVERRIDE: The active game session has been forcefully terminated.**", parse_mode="Markdown")
 
 # ==========================================
 # 💰 ECONOMY, UTILITY & AFFILIATE COMMANDS
@@ -532,7 +583,6 @@ def generate_referral_link(message):
     bot_info = bot.get_me()
     bot_username = bot_info.username
     user_id = message.from_user.id
-    
     ref_link = f"https://t.me/{bot_username}?start=ref_{user_id}"
     
     text = (
@@ -636,5 +686,5 @@ def run_dummy_server():
 
 threading.Thread(target=run_dummy_server, daemon=True).start()
 
-print("🚀 Ultimate Blind Imposter Bot with Affiliate System is running...")
+print("🚀 Secure Blind Imposter Bot with Broadcast Option is running...")
 bot.infinity_polling()
